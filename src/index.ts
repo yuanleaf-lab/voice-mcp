@@ -105,7 +105,7 @@ interface ElevenLabsHistoryItem {
 // =============================================================================
 
 const EXT_APPS_MIME = "text/html;profile=mcp-app" as const;
-const VOICE_RESOURCE_URI = "ui://voice-mcp/player.html";
+const VOICE_RESOURCE_URI = "ui://voice-mcp/player-v2.html";
 const LATEST_VOICE_CACHE_PATH = "/__voice-mcp/latest-voice-event";
 const AUDIO_CACHE_PREFIX = "/audio/";
 const AUDIO_MIME_TYPE = "audio/mpeg";
@@ -245,6 +245,7 @@ function getPlayerHTML(botName: string): string {
     let audio = null;
     let waveInterval = null;
     let initializedSent = false;
+    let renderedFromToolOutput = false;
     
     function escapeHtml(text) {
       const div = document.createElement('div');
@@ -360,7 +361,22 @@ function getPlayerHTML(botName: string): string {
     function handleData(data) {
       if (data.error) { showError(data.error); return; }
       if (data.text && (data.audio_url || data.audio_base64)) {
+        renderedFromToolOutput = true;
         renderPlayer(data.text, data.audio_url, data.audio_base64);
+      }
+    }
+
+    function readOpenAIToolOutput() {
+      const openai = window.openai;
+      const toolOutput = openai && openai.toolOutput;
+      if (!toolOutput) return;
+      handleData(toolOutput.structuredContent || toolOutput);
+    }
+
+    function showWaitingFallback() {
+      if (renderedFromToolOutput) return;
+      if (contentEl.querySelector('.loading')) {
+        contentEl.innerHTML = '<div class="loading">Waiting for voice data...</div>';
       }
     }
     
@@ -389,6 +405,10 @@ function getPlayerHTML(botName: string): string {
       }
       if (msg.structuredContent) handleData(msg.structuredContent);
     });
+
+    readOpenAIToolOutput();
+    setTimeout(readOpenAIToolOutput, 100);
+    setTimeout(readOpenAIToolOutput, 500);
     
     sendToHost('ui/initialize', {
       appInfo: {
@@ -398,6 +418,17 @@ function getPlayerHTML(botName: string): string {
       appCapabilities: {},
       protocolVersion: '2026-01-26'
     }, 1);
+
+    setTimeout(function() {
+      if (!initializedSent) {
+        initializedSent = true;
+        sendToHost('ui/notifications/initialized', {});
+      }
+      if (!renderedFromToolOutput) {
+        readOpenAIToolOutput();
+        showWaitingFallback();
+      }
+    }, 1000);
   </script>
 </body>
 </html>`;
