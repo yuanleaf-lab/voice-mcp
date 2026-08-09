@@ -240,6 +240,7 @@ function getPlayerHTML(botName: string): string {
     const BOT_NAME = '${botName}';
     let audio = null;
     let waveInterval = null;
+    let audioObjectUrl = null;
     
     function escapeHtml(text) {
       const div = document.createElement('div');
@@ -261,10 +262,28 @@ function getPlayerHTML(botName: string): string {
       const heights = [40, 70, 55, 85, 45, 90, 60, 75, 50, 80, 65, 55, 70, 45, 85, 50];
       return heights.map(h => '<div class="wave-bar" style="height:' + h + '%"></div>').join('');
     }
+
+    function revokeAudioObjectUrl() {
+      if (audioObjectUrl) {
+        URL.revokeObjectURL(audioObjectUrl);
+        audioObjectUrl = null;
+      }
+    }
+
+    function createAudioObjectUrl(audioBase64) {
+      const binaryString = atob(audioBase64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: 'audio/mpeg' });
+      return URL.createObjectURL(blob);
+    }
     
     function renderPlayer(text, audioBase64) {
-      const audioUrl = 'data:audio/mpeg;base64,' + audioBase64;
-      
+      revokeAudioObjectUrl();
+      audioObjectUrl = createAudioObjectUrl(audioBase64);
+
       contentEl.innerHTML = 
         '<div class="player">' +
           '<button class="play-btn" id="playBtn">' +
@@ -277,9 +296,10 @@ function getPlayerHTML(botName: string): string {
           '<span class="arrow">▶</span> Show transcript' +
         '</button>' +
         '<div class="text-bubble" id="textBubble">' + escapeHtml(text) + '</div>' +
-        '<audio id="audio" src="' + audioUrl + '" preload="metadata"></audio>';
+        '<audio id="audio" preload="metadata"></audio>';
       
       audio = document.getElementById('audio');
+      audio.src = audioObjectUrl;
       const playBtn = document.getElementById('playBtn');
       const playIcon = document.getElementById('playIcon');
       const durationEl = document.getElementById('duration');
