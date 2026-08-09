@@ -72,8 +72,6 @@ interface VoiceEvent {
   id: string;
   text: string;
   audio_base64: string;
-  audio_url?: string;
-  mime_type?: string;
   created_at: string;
   provider: TtsProvider;
   model_id: string;
@@ -105,10 +103,8 @@ interface ElevenLabsHistoryItem {
 // =============================================================================
 
 const EXT_APPS_MIME = "text/html;profile=mcp-app" as const;
-const VOICE_RESOURCE_URI = "ui://voice-mcp/player-v2.html";
+const VOICE_RESOURCE_URI = "ui://voice-mcp/player.html";
 const LATEST_VOICE_CACHE_PATH = "/__voice-mcp/latest-voice-event";
-const AUDIO_CACHE_PREFIX = "/audio/";
-const AUDIO_MIME_TYPE = "audio/mpeg";
 
 // =============================================================================
 // Audio Player HTML (WeChat-style UI)
@@ -244,8 +240,6 @@ function getPlayerHTML(botName: string): string {
     const BOT_NAME = '${botName}';
     let audio = null;
     let waveInterval = null;
-    let initializedSent = false;
-    let renderedFromToolOutput = false;
     
     function escapeHtml(text) {
       const div = document.createElement('div');
@@ -268,12 +262,8 @@ function getPlayerHTML(botName: string): string {
       return heights.map(h => '<div class="wave-bar" style="height:' + h + '%"></div>').join('');
     }
     
-    function renderPlayer(text, audioUrl, audioBase64) {
-      const sourceUrl = audioUrl || (audioBase64 ? 'data:audio/mpeg;base64,' + audioBase64 : '');
-      if (!sourceUrl) {
-        showError('Audio is unavailable');
-        return;
-      }
+    function renderPlayer(text, audioBase64) {
+      const audioUrl = 'data:audio/mpeg;base64,' + audioBase64;
       
       contentEl.innerHTML = 
         '<div class="player">' +
@@ -287,10 +277,9 @@ function getPlayerHTML(botName: string): string {
           '<span class="arrow">▶</span> Show transcript' +
         '</button>' +
         '<div class="text-bubble" id="textBubble">' + escapeHtml(text) + '</div>' +
-        '<audio id="audio" preload="metadata"></audio>';
+        '<audio id="audio" src="' + audioUrl + '" preload="metadata"></audio>';
       
       audio = document.getElementById('audio');
-      audio.src = sourceUrl;
       const playBtn = document.getElementById('playBtn');
       const playIcon = document.getElementById('playIcon');
       const durationEl = document.getElementById('duration');
@@ -360,23 +349,8 @@ function getPlayerHTML(botName: string): string {
     
     function handleData(data) {
       if (data.error) { showError(data.error); return; }
-      if (data.text && (data.audio_url || data.audio_base64)) {
-        renderedFromToolOutput = true;
-        renderPlayer(data.text, data.audio_url, data.audio_base64);
-      }
-    }
-
-    function readOpenAIToolOutput() {
-      const openai = window.openai;
-      const toolOutput = openai && openai.toolOutput;
-      if (!toolOutput) return;
-      handleData(toolOutput.structuredContent || toolOutput);
-    }
-
-    function showWaitingFallback() {
-      if (renderedFromToolOutput) return;
-      if (contentEl.querySelector('.loading')) {
-        contentEl.innerHTML = '<div class="loading">Waiting for voice data...</div>';
+      if (data.audio_base64 && data.text) {
+        renderPlayer(data.text, data.audio_base64);
       }
     }
     
@@ -391,10 +365,6 @@ function getPlayerHTML(botName: string): string {
       if (!msg || typeof msg !== 'object') return;
       
       if (msg.jsonrpc === '2.0') {
-        if (msg.id === 1 && !msg.error && !initializedSent) {
-          initializedSent = true;
-          sendToHost('ui/notifications/initialized', {});
-        }
         if (msg.method === 'ui/notifications/tool-input') {
           contentEl.innerHTML = '<div class="loading">Generating voice...</div>';
         }
@@ -405,30 +375,9 @@ function getPlayerHTML(botName: string): string {
       }
       if (msg.structuredContent) handleData(msg.structuredContent);
     });
-
-    readOpenAIToolOutput();
-    setTimeout(readOpenAIToolOutput, 100);
-    setTimeout(readOpenAIToolOutput, 500);
     
-    sendToHost('ui/initialize', {
-      appInfo: {
-        name: 'voice-mcp',
-        version: '1.0.0'
-      },
-      appCapabilities: {},
-      protocolVersion: '2026-01-26'
-    }, 1);
-
-    setTimeout(function() {
-      if (!initializedSent) {
-        initializedSent = true;
-        sendToHost('ui/notifications/initialized', {});
-      }
-      if (!renderedFromToolOutput) {
-        readOpenAIToolOutput();
-        showWaitingFallback();
-      }
-    }, 1000);
+    sendToHost('ui/initialize', { name: 'voice-mcp', version: '1.0.0' }, 1);
+    setTimeout(function() { sendToHost('ui/notifications/initialized', {}); }, 50);
   </script>
 </body>
 </html>`;
@@ -1839,10 +1788,10 @@ function getVisualizerPanelHTML(botName: string): string {
     }
 
     function receiveVoiceEvent(event) {
-      if (!event || event.id === lastEventId || (!event.audio_url && !event.audio_base64)) return;
+      if (!event || event.id === lastEventId || !event.audio_base64) return;
       lastEventId = event.id;
 
-      if (objectUrl && objectUrl.startsWith('blob:')) {
+      if (objectUrl) {
         URL.revokeObjectURL(objectUrl);
         objectUrl = '';
       }
@@ -1850,7 +1799,7 @@ function getVisualizerPanelHTML(botName: string): string {
       audio.pause();
       audio.removeAttribute('src');
       audio.load();
-      objectUrl = event.audio_url || createAudioObjectUrlFromBase64(event.audio_base64);
+      objectUrl = createAudioObjectUrlFromBase64(event.audio_base64);
       downloadName = createDownloadName(event.text || '', event.created_at);
       audio.src = objectUrl;
       audio.load();
@@ -1925,7 +1874,7 @@ function getVisualizerPanelHTML(botName: string): string {
         }
 
         const blob = await response.blob();
-        if (objectUrl && objectUrl.startsWith('blob:')) URL.revokeObjectURL(objectUrl);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
         objectUrl = URL.createObjectURL(blob);
         downloadName = createDownloadName(text, Date.now());
         audio.src = objectUrl;
@@ -2864,90 +2813,16 @@ function getLatestVoiceCacheRequest(origin: string): Request {
   return new Request(new URL(LATEST_VOICE_CACHE_PATH, origin).toString(), { method: "GET" });
 }
 
-function getAudioCacheRequest(origin: string, eventId: string): Request {
-  return new Request(new URL(`${AUDIO_CACHE_PREFIX}${encodeURIComponent(eventId)}`, origin).toString(), { method: "GET" });
-}
-
-function getAudioUrl(origin: string, eventId: string): string {
-  return new URL(`${AUDIO_CACHE_PREFIX}${encodeURIComponent(eventId)}`, origin).toString();
-}
-
-function base64ToBytes(audioBase64: string): Uint8Array {
-  const binaryString = atob(audioBase64);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
-}
-
-interface AudioByteRange {
-  start: number;
-  end: number;
-}
-
-function parseAudioRange(rangeHeader: string | null, totalLength: number): AudioByteRange | null | "invalid" {
-  if (!rangeHeader) return null;
-
-  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
-  if (!match) return "invalid";
-
-  const [, startPart, endPart] = match;
-  if (!startPart && !endPart) return "invalid";
-  if (totalLength <= 0) return "invalid";
-
-  if (!startPart) {
-    const suffixLength = Number(endPart);
-    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return "invalid";
-    return {
-      start: Math.max(totalLength - suffixLength, 0),
-      end: totalLength - 1,
-    };
-  }
-
-  const start = Number(startPart);
-  const end = endPart ? Number(endPart) : totalLength - 1;
-
-  if (
-    !Number.isSafeInteger(start) ||
-    !Number.isSafeInteger(end) ||
-    start < 0 ||
-    end < start ||
-    start >= totalLength
-  ) {
-    return "invalid";
-  }
-
-  return {
-    start,
-    end: Math.min(end, totalLength - 1),
-  };
-}
-
-function createAudioHeaders(contentLength: number, contentRange?: string): Headers {
-  const headers = new Headers(corsHeaders);
-  headers.set("Content-Type", AUDIO_MIME_TYPE);
-  headers.set("Accept-Ranges", "bytes");
-  headers.set("Content-Length", String(contentLength));
-  headers.set("Cache-Control", "public, max-age=3600");
-  if (contentRange) {
-    headers.set("Content-Range", contentRange);
-  }
-  return headers;
-}
-
-function createVoiceEvent(env: Env, origin: string, input: SpeakInput, result: AudioResult): VoiceEvent {
+function createVoiceEvent(env: Env, input: SpeakInput, result: AudioResult): VoiceEvent {
   const provider = getTtsProvider(env);
   const finalText = result.final_text || input.text;
   const alignment = result.alignment || result.normalized_alignment;
   const captionCues = createCaptionCues(finalText, alignment);
-  const id = crypto.randomUUID();
 
   return {
-    id,
+    id: crypto.randomUUID(),
     text: input.text,
     audio_base64: result.audio_base64 || "",
-    mime_type: AUDIO_MIME_TYPE,
     created_at: new Date().toISOString(),
     provider,
     model_id: provider === "elevenlabs" ? getElevenLabsModel(env) : getDashScopeModel(env),
@@ -2957,44 +2832,15 @@ function createVoiceEvent(env: Env, origin: string, input: SpeakInput, result: A
   };
 }
 
-async function storeLatestVoiceEvent(origin: string, event: VoiceEvent): Promise<VoiceEvent> {
-  const storedEvent: VoiceEvent = {
-    ...event,
-    mime_type: event.mime_type || AUDIO_MIME_TYPE,
-  };
-  delete storedEvent.audio_url;
-
-  if (storedEvent.audio_base64) {
-    try {
-      const audioBytes = base64ToBytes(storedEvent.audio_base64);
-      await caches.default.put(
-        getAudioCacheRequest(origin, storedEvent.id),
-        new Response(audioBytes, {
-          headers: {
-            ...corsHeaders,
-            "Content-Type": AUDIO_MIME_TYPE,
-            "Content-Length": String(audioBytes.byteLength),
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=3600",
-          },
-        }),
-      );
-      storedEvent.audio_url = getAudioUrl(origin, storedEvent.id);
-    } catch (error) {
-      console.error("Failed to store audio cache", error);
-    }
-  }
-
+async function storeLatestVoiceEvent(origin: string, event: VoiceEvent): Promise<void> {
   await caches.default.put(
     getLatestVoiceCacheRequest(origin),
-    Response.json(storedEvent, {
+    Response.json(event, {
       headers: {
         "Cache-Control": "public, max-age=3600",
       },
     }),
   );
-
-  return storedEvent;
 }
 
 async function readLatestVoiceEvent(origin: string): Promise<VoiceEvent | null> {
@@ -3026,34 +2872,13 @@ function createVoiceServer(env: Env, origin: string): McpServer {
   server.resource(
     VOICE_RESOURCE_URI,
     VOICE_RESOURCE_URI,
-    {
-      mimeType: EXT_APPS_MIME,
-      description: "Voice Player",
-      _meta: {
-        ui: {
-          prefersBorder: true,
-          csp: {
-            connectDomains: [origin],
-            resourceDomains: [origin],
-          },
-        },
-      },
-    },
+    { mimeType: EXT_APPS_MIME, description: "Voice Player" },
     async () => ({
       contents: [
         {
           uri: VOICE_RESOURCE_URI,
           mimeType: EXT_APPS_MIME,
           text: PLAYER_HTML,
-          _meta: {
-            ui: {
-              prefersBorder: true,
-              csp: {
-                connectDomains: [origin],
-                resourceDomains: [origin],
-              },
-            },
-          },
         },
       ],
     }),
@@ -3069,18 +2894,9 @@ function createVoiceServer(env: Env, origin: string): McpServer {
         style: z.string().optional().describe("Optional speaking style"),
         raw_tags: z.boolean().optional().describe("Allow raw ElevenLabs v3 audio tags when supported"),
       }),
-      outputSchema: z.object({
-        text: z.string().optional(),
-        event_id: z.string().optional(),
-        audio_url: z.string().url().optional(),
-        audio_base64: z.string().optional(),
-        mime_type: z.string().optional(),
-        error: z.string().optional(),
-      }),
       _meta: {
         ui: { resourceUri: VOICE_RESOURCE_URI },
         "ui/resourceUri": VOICE_RESOURCE_URI,
-        "openai/outputTemplate": VOICE_RESOURCE_URI,
       },
     },
     async ({ text, style, raw_tags }) => {
@@ -3100,26 +2916,20 @@ function createVoiceServer(env: Env, origin: string): McpServer {
       const result = await generateAudio(env, input);
 
       if (result.success && result.audio_base64) {
-        let event = createVoiceEvent(env, origin, input, result);
         try {
-          event = await storeLatestVoiceEvent(origin, event);
+          await storeLatestVoiceEvent(origin, createVoiceEvent(env, input, result));
         } catch (error) {
           console.error("Failed to store latest voice event", error);
         }
-
-        const structuredContent = {
-          text: text,
-          event_id: event.id,
-          ...(event.audio_url ? { audio_url: event.audio_url } : {}),
-          audio_base64: event.audio_base64,
-          mime_type: AUDIO_MIME_TYPE,
-        };
 
         return {
           content: [
             { type: "text" as const, text: `🎙️ ${botName} says: "${text}"` },
           ],
-          structuredContent,
+          structuredContent: {
+            text: text,
+            audio_base64: result.audio_base64,
+          },
         };
       }
 
@@ -3143,9 +2953,8 @@ function createVoiceServer(env: Env, origin: string): McpServer {
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, Range',
-  'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Length, Content-Range',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
 export default {
@@ -3195,55 +3004,6 @@ export default {
           "Cache-Control": "no-store",
         },
       });
-    }
-
-    if (path.startsWith(AUDIO_CACHE_PREFIX) && (request.method === 'GET' || request.method === 'HEAD')) {
-      const eventId = decodeURIComponent(path.slice(AUDIO_CACHE_PREFIX.length)).trim();
-      if (!isValidHistoryItemId(eventId)) {
-        return Response.json({ error: 'Invalid audio event ID' }, {
-          status: 400,
-          headers: corsHeaders,
-        });
-      }
-
-      const audioResponse = await caches.default.match(getAudioCacheRequest(url.origin, eventId));
-      if (!audioResponse) {
-        return Response.json({ error: 'Audio event not found or expired' }, {
-          status: 404,
-          headers: corsHeaders,
-        });
-      }
-
-      const audioBytes = new Uint8Array(await audioResponse.arrayBuffer());
-      const totalLength = audioBytes.byteLength;
-      const range = parseAudioRange(request.headers.get("Range"), totalLength);
-
-      if (range === "invalid") {
-        const headers = createAudioHeaders(0);
-        headers.set("Content-Range", `bytes */${totalLength}`);
-        return new Response(null, {
-          status: 416,
-          headers,
-        });
-      }
-
-      if (range) {
-        const chunkLength = range.end - range.start + 1;
-        const headers = createAudioHeaders(
-          chunkLength,
-          `bytes ${range.start}-${range.end}/${totalLength}`,
-        );
-        return new Response(
-          request.method === 'HEAD' ? null : audioBytes.slice(range.start, range.end + 1).buffer,
-          {
-            status: 206,
-            headers,
-          },
-        );
-      }
-
-      const headers = createAudioHeaders(totalLength);
-      return new Response(request.method === 'HEAD' ? null : audioBytes.buffer, { headers });
     }
 
     if (path === '/history' && request.method === 'GET') {
@@ -3334,14 +3094,17 @@ export default {
       const result = await generateAudio(env, input);
 
       if (result.success && result.audio_base64) {
-        const event = createVoiceEvent(env, url.origin, input, result);
         try {
-          await storeLatestVoiceEvent(url.origin, event);
+          await storeLatestVoiceEvent(url.origin, createVoiceEvent(env, input, result));
         } catch (error) {
           console.error("Failed to store latest voice event", error);
         }
 
-        const bytes = base64ToBytes(result.audio_base64);
+        const binaryString = atob(result.audio_base64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
 
         return new Response(bytes, {
           headers: {
